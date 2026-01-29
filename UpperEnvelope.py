@@ -27,11 +27,15 @@ def PolygonsToUpperEnvelopeObj(name: str, polygons: list[Polygon]) -> bpy.types.
         for coord in P.exterior.coords:
             vertData = bm.verts.new((coord[0], coord[1], coord[2]))
             verts.append(vertData)
+        bm.verts.ensure_lookup_table()
 
         # 建立 edge 和 face
         for i in range(len(verts)):
             bm.edges.new([verts[i], verts[(i + 1) % len(verts)]])
+        bm.edges.ensure_lookup_table()
+        
         bm.faces.new(verts)
+        bm.faces.ensure_lookup_table()
 
     # 刪除多餘的頂點
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
