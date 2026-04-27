@@ -7,6 +7,15 @@
 
 將 active object 的所有面投影到 XY 平面上求 mesh arrangement（把投影在 XY 平面上的所有面，通通裁切並拼接成一組邊界清晰、互不重疊的 planar graph），然後將 mesh arrangement 的結果投影回 3D 空間。
 
+投影方法：
+- VERTEX: 每個頂點向上投影到最高點
+- FACE: 整個面向上投影到最高的面
+- FACE_FILL_WALL: 同 FACE，但補上垂直牆面
+
+![](doc/face_fill_wall.png)
+
+投影的實作方式不是透過 Raycast，而是對 mesh arrangement 結果的每個頂點（VERTEX 方法）或每個面（FACE 方法）看它在 XY 平面的投影被哪些原始模型的面覆蓋住，有被蓋住代表能投影上去。
+
 # Install Dependency
 
 Step 1. 使用管理員權限開啟 command line，並移動到 blender 使用的 python.exe 所在目錄
