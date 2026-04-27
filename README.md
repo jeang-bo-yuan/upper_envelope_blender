@@ -5,7 +5,7 @@
 
 # 原理
 
-將 active object 的所有面投影到 XY 平面上求 mesh arrangement（把投影在 XY 平面上的所有面，通通裁切並拼接成一組邊界清晰、互不重疊的 planar graph），然後將 mesh arrangement 的結果投影回 3D 空間。
+對 active object 做 3D Mesh Arrangement，然後將所有面投影到 XY 平面上求 2D Mesh Arrangement（把投影在 XY 平面上的所有面，通通裁切並拼接成一組邊界清晰、互不重疊的 planar graph），然後將 2D Mesh Arrangement 的結果投影回 3D 空間。
 
 投影方法：
 - VERTEX: 每個頂點向上投影到最高點
