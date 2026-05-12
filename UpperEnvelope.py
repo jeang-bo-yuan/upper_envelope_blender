@@ -10,9 +10,8 @@ bl_info = {
 }
 
 from arrangement2D.upper_envelope import upper_envelope, get_plane_equation, point2D_solve_z
-from arrangement2D import util
-from arrangement2D.arrangement2D import arrangement2D
 import arrangement2D.config as cfg
+import shapely
 from shapely import Polygon
 from shapely.strtree import STRtree
 import bpy
@@ -60,7 +59,7 @@ def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, n
     """
     UPPER ENVELOPE and fill vertical wall
     """
-    polygons = [P for P in util.triangulate(polygons) if P.is_valid]
+    polygons = [P for P in polygons if P.is_valid]
 
     # 取出每一面的 x y 座標
     edges : list[cfg.RAW_EDGE_TYPE] = []
@@ -76,8 +75,11 @@ def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, n
             minZ = min(minZ, poly.exterior.coords[i][2])
 
     # Step 1. 做 Arrangement #############################################################################
-    A = arrangement2D(edges)
-    A = util.triangulate(A)
+    print("\n== Arrangement 2D (using shapely.unary_union + shapely.polygonize) ==")
+    perf_start = time.perf_counter()
+    A = shapely.polygonize(shapely.unary_union([shapely.LineString(E) for E in edges]).geoms)
+    A = [P for P in shapely.get_parts(A) if isinstance(P, shapely.Polygon)]
+    print("Arrangement 2D: ", time.perf_counter() - perf_start, "s")
 
     # Step 2. Project Face and Record Vertex Height ######################################################
     # 給一個 (x, y) -> 一個列表包含所有高度
