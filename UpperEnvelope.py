@@ -56,7 +56,7 @@ def PolygonsToObj(polygons: list[Polygon], name: str):
     # 建立 Object
     return bpy.data.objects.new(name, mesh)
 
-def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, newObjName: str) -> bpy.types.Object:
+def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, newObjName: str, *, overrideMinZ: float | None = None) -> bpy.types.Object:
     """
     UPPER ENVELOPE and fill vertical wall
     """
@@ -64,7 +64,7 @@ def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, n
 
     # 取出每一面的 x y 座標
     edges : list[cfg.RAW_EDGE_TYPE] = []
-    minZ = math.inf
+    minZ = overrideMinZ or math.inf
 
     for poly in polygons:
         for i in range(1, len(poly.exterior.coords)):
@@ -219,6 +219,12 @@ class UPPERENV_PROP_find(bpy.types.PropertyGroup):
         default="FACE_FILL_WALL"
     ) #type: ignore
 
+    do_cleanup: BoolProperty(
+        name="Do Cleanup",
+        description="是否對 Upper Envelope 的結果清理過多的頂點。 !!!WARNING!!!: 清理的結果可能會影響拓樸。",
+        default=True
+    ) #type: ignore
+
     buffer_size: FloatProperty(
         name="Buffer Size",
         description="""
@@ -237,12 +243,6 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         default=True
     ) #type: ignore
 
-    do_cleanup: BoolProperty(
-        name="Do Cleanup",
-        description="是否對 Upper Envelope 的結果清理過多的頂點。 !!!WARNING!!!: 清理的結果可能會影響拓樸。",
-        default=False
-    ) #type: ignore
-
     snap_grid_size: FloatProperty(
         name="Snap Grid Size",
         description="若值 > 0，則對輸入的模型做 snapping 再找 upper envelope，snapping 時將每個頂點的座標貼到 grid size 的倍數",
@@ -250,6 +250,17 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         default=1e-3
     ) #type: ignore
 
+    overrideMinZ: BoolProperty(
+        name="Override Min Z",
+        description="是否覆寫 Min Z",
+        default=False
+    ) #type: ignore
+
+    minZ: FloatProperty(
+        name="minZ",
+        description="如果 overrideMinZ 為 True，則將所有 Project 失敗的 VERTEX 或 FACE 移到 min(`模型的 min Z`, `overrideMinZ`)",
+        default=0
+    ) #type: ignore
 
 # --------------------------------------------------
 # Operator
@@ -271,6 +282,12 @@ class UPPERENV_OT_find(bpy.types.Operator):
         default="FACE_FILL_WALL"
     ) #type: ignore
 
+    do_cleanup: BoolProperty(
+        name="Do Cleanup",
+        description="是否對 Upper Envelope 的結果清理過多的頂點。 !!!WARNING!!!: 清理的結果可能會影響拓樸。",
+        default=True
+    ) #type: ignore
+
     buffer_size: FloatProperty(
         name="Buffer Size",
         description="""
@@ -289,17 +306,23 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         default=True
     ) #type: ignore
 
-    do_cleanup: BoolProperty(
-        name="Do Cleanup",
-        description="是否對 Upper Envelope 的結果清理過多的頂點。 !!!WARNING!!!: 清理的結果可能會影響拓樸。",
-        default=False
-    ) #type: ignore
-
     snap_grid_size: FloatProperty(
         name="Snap Grid Size",
         description="若值 > 0，則對輸入的模型做 snapping 再找 upper envelope，snapping 時將每個頂點的座標貼到 grid size 的倍數",
         min=0,
         default=1e-3
+    ) #type: ignore
+
+    overrideMinZ: BoolProperty(
+        name="Override Min Z",
+        description="是否覆寫 Min Z",
+        default=False
+    ) #type: ignore
+
+    minZ: FloatProperty(
+        name="minZ",
+        description="如果 overrideMinZ 為 True，則將所有 Project 失敗的 VERTEX 或 FACE 移到 min(`模型的 min Z`, `overrideMinZ`)",
+        default=0
     ) #type: ignore
 
     @classmethod
@@ -309,6 +332,8 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
     def execute(self, context):
         old_debug = cfg.DEBUG, cfg.DEBUG_PLOT
         cfg.DEBUG, cfg.DEBUG_PLOT = (True, False)
+
+        original_name = context.object.name
 
         # 複製一份
         bpy.ops.object.duplicate()
@@ -332,7 +357,7 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
 
         obj = context.object
         # 找 Upper Envelope
-        newObj = self.ObjFindUpperEnvelope(obj)
+        newObj = self.ObjFindUpperEnvelope(obj, original_name)
         if self.do_cleanup:
             self.cleanup(newObj)
 
@@ -357,7 +382,7 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
 
             context.object.data.update()
     
-    def ObjFindUpperEnvelope(self, obj: bpy.types.Object) -> bpy.types.Object:
+    def ObjFindUpperEnvelope(self, obj: bpy.types.Object, original_name: str) -> bpy.types.Object:
         """
         傳入一個 Object，找 Upper Envelope，然後建立新的物件
         """
@@ -374,11 +399,13 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
                 polygons.append(shapelyP)
 
         # 生成 upper envelope ###########################################################
+        overrideMinZ = self.minZ if self.overrideMinZ else None
         if self.project_method == "FACE_FILL_WALL":
-            newObj = upper_envelope_face_fill_wall(polygons, self.buffer_size, f"{obj.name} Upper Envelope")
+            newObj = upper_envelope_face_fill_wall(polygons, self.buffer_size, f"{original_name} Upper Envelope",
+                                                   overrideMinZ=overrideMinZ)
         else:
-            polygons = upper_envelope(polygons, buffer_size=self.buffer_size, project_method=self.project_method)
-            newObj = PolygonsToObj(polygons, f"{obj.name} Upper Envelope")
+            polygons = upper_envelope(polygons, buffer_size=self.buffer_size, project_method=self.project_method, overrideMinZ=overrideMinZ)
+            newObj = PolygonsToObj(polygons, f"{original_name} Upper Envelope")
         
         ################################################################################
         for C in obj.users_collection:
@@ -400,36 +427,36 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         decimate_modifier.angle_limit = math.radians(5)
         bpy.ops.object.modifier_apply(modifier="Decimate")
 
-        bpy.ops.object.mode_set(mode='EDIT')
-        # 三角化
-        bpy.ops.mesh.select_mode(type='FACE')
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.quads_convert_to_tris()
+        # bpy.ops.object.mode_set(mode='EDIT')
+        # # 三角化
+        # bpy.ops.mesh.select_mode(type='FACE')
+        # bpy.ops.mesh.select_all(action='SELECT')
+        # bpy.ops.mesh.quads_convert_to_tris()
 
-        bm = bmesh.from_edit_mesh(obj.data)
-        # 1. 刪除面積為 0 的線和邊
-        old_edge_len = len(bm.edges)
-        while True:
-            bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=0.0001)
+        # bm = bmesh.from_edit_mesh(obj.data)
+        # # 1. 刪除面積為 0 的線和邊
+        # old_edge_len = len(bm.edges)
+        # while True:
+        #     bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=0.0001)
 
-            if len(bm.edges) == old_edge_len: # 重覆直到沒有邊被刪
-                break
+        #     if len(bm.edges) == old_edge_len: # 重覆直到沒有邊被刪
+        #         break
 
-            old_edge_len = len(bm.edges)
+        #     old_edge_len = len(bm.edges)
 
-        # 2. 清理連接多個面的邊
-        target_edges = [e for e in bm.edges if len(e.link_faces) > 2]
-        disconnected_edges = bmesh.ops.split_edges(bm, edges=target_edges)['edges']
-        disconnected_edges = [e for e in disconnected_edges if len(e.link_faces) == 1]
-        bmesh.ops.delete(bm, geom=disconnected_edges, context='EDGES')
+        # # 2. 清理連接多個面的邊
+        # target_edges = [e for e in bm.edges if len(e.link_faces) > 2]
+        # disconnected_edges = bmesh.ops.split_edges(bm, edges=target_edges)['edges']
+        # disconnected_edges = [e for e in disconnected_edges if len(e.link_faces) == 1]
+        # bmesh.ops.delete(bm, geom=disconnected_edges, context='EDGES')
 
-        # 3. 刪除 wire 和沒連接邊的點
-        wire_edges = [e for e in bm.edges if not e.link_faces]
-        bmesh.ops.delete(bm, geom=wire_edges, context='EDGES')
-        lone_verts = [v for v in bm.verts if not v.link_edges]
-        bmesh.ops.delete(bm, geom=lone_verts, context='VERTS')
+        # # 3. 刪除 wire 和沒連接邊的點
+        # wire_edges = [e for e in bm.edges if not e.link_faces]
+        # bmesh.ops.delete(bm, geom=wire_edges, context='EDGES')
+        # lone_verts = [v for v in bm.verts if not v.link_edges]
+        # bmesh.ops.delete(bm, geom=lone_verts, context='VERTS')
 
-        bpy.ops.object.mode_set(mode='OBJECT')
+        # bpy.ops.object.mode_set(mode='OBJECT')
 
 # --------------------------------------------------
 # Panel (Sidebar / N-panel)
@@ -453,15 +480,27 @@ class UPPERENV_PT_panel(bpy.types.Panel):
         op.auto_buffer_size = prop.auto_buffer_size
         op.do_cleanup = prop.do_cleanup
         op.snap_grid_size = prop.snap_grid_size
+        op.overrideMinZ = prop.overrideMinZ
+        op.minZ = prop.minZ
+
 
         layout.separator(type='LINE')
         layout.label(text="Settings:")
         layout.prop(prop, 'project_method')
+
+        layout.separator(type='SPACE')
+        layout.label(text='Precision')
         layout.prop(prop, 'auto_buffer_size')
         if not prop.auto_buffer_size:
             layout.prop(prop, 'buffer_size')
-        layout.prop(prop, 'do_cleanup')
         layout.prop(prop, 'snap_grid_size')
+
+        layout.separator(type='SPACE')
+        layout.label(text='Post Process')
+        layout.prop(prop, 'do_cleanup')
+        layout.prop(prop, 'overrideMinZ')
+        if prop.overrideMinZ:
+            layout.prop(prop, 'minZ')
 
 # --------------------------------------------------
 # Register / Unregister

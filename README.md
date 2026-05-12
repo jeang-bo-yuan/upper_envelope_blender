@@ -33,5 +33,7 @@ Name | Description
 Project Method| 投影回 3D 時以 VERTEX 為單位進行投影或以 FACE 為單位進行投影
 Auto Adjust Buffer Size| 在 Project Method 為 VERTEX 時 Buffer Size 設成 1e-15，在 Project Method 為 FACE 時設成 1e-10
 Buffer Size|因為數值問題，在計算 mesh arrangement 時交點可能會偏離原直線一點點，導致 arrangement 的結果可能比原本輸入的三角面還要向外擴。<br/>所以在把頂點投影回去時，把原本的每個平面在 XY 平面上都向外擴 buffer_size 的大小再做覆蓋（cover）檢測。<br/><br/>buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結果「可能」會看起來更 low poly。<br/>但是在遇到幾乎垂直的面時，反而會把旁邊的頂點拉到極端高的地方。
-Do Cleanup|是否對 Upper Envelope 的結果清理過多的頂點。 **!!!WARNING!!!: 清理的結果可能會影響拓樸。**
 Snap Grid Size|將模型所有頂點的座標貼在 Snap Grid Size 的倍數才找 Upper Envelope
+Do Cleanup|是否對 Upper Envelope 的結果清理過多的頂點。 **!!!WARNING!!!: 清理的結果可能會影響拓樸。**
+overrideMinZ|是否覆寫 Min Z
+minZ|如果 overrideMinZ 為 True，則將所有 Project 失敗的 VERTEX 或 FACE 移到 min(`模型的 min Z`, `overrideMinZ`)
