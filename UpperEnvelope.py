@@ -10,6 +10,7 @@ bl_info = {
 }
 
 from arrangement2D.upper_envelope import upper_envelope, get_plane_equation, point2D_solve_z
+from arrangement2D import util
 import arrangement2D.config as cfg
 import shapely
 from shapely import Polygon
@@ -78,7 +79,7 @@ def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, n
     print("\n== Arrangement 2D (using shapely.unary_union + shapely.polygonize) ==")
     perf_start = time.perf_counter()
     A = shapely.polygonize(shapely.unary_union([shapely.LineString(E) for E in edges]).geoms)
-    A = [P for P in shapely.get_parts(A) if isinstance(P, shapely.Polygon)]
+    A = util.triangulate([P for P in shapely.get_parts(A) if isinstance(P, shapely.Polygon)])
     print("Arrangement 2D: ", time.perf_counter() - perf_start, "s")
 
     # Step 2. Project Face and Record Vertex Height ######################################################
@@ -334,6 +335,7 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
     def execute(self, context):
         old_debug = cfg.DEBUG, cfg.DEBUG_PLOT
         cfg.DEBUG, cfg.DEBUG_PLOT = (True, False)
+        perf_start = time.perf_counter()
 
         original_name = context.object.name
 
@@ -373,6 +375,7 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         newObj.select_set(True)
         context.view_layer.objects.active = newObj
 
+        print("[Time] Total: ", time.perf_counter() - perf_start, "s")
         cfg.DEBUG, cfg.DEBUG_PLOT = old_debug
         return {'FINISHED'}
     
