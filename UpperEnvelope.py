@@ -340,6 +340,8 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         original_name = context.object.name
 
         # 複製一份
+        bpy.ops.object.select_all(action='DESELECT')
+        context.object.select_set(True)
         bpy.ops.object.duplicate()
 
         # Snap
@@ -432,36 +434,45 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         decimate_modifier.angle_limit = math.radians(5)
         bpy.ops.object.modifier_apply(modifier="Decimate")
 
-        # bpy.ops.object.mode_set(mode='EDIT')
-        # # 三角化
-        # bpy.ops.mesh.select_mode(type='FACE')
-        # bpy.ops.mesh.select_all(action='SELECT')
-        # bpy.ops.mesh.quads_convert_to_tris()
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_mode(type='FACE')
+        bpy.ops.mesh.select_all(action='SELECT')
 
-        # bm = bmesh.from_edit_mesh(obj.data)
-        # # 1. 刪除面積為 0 的線和邊
-        # old_edge_len = len(bm.edges)
-        # while True:
-        #     bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=0.0001)
+        # 三角化
+        bpy.ops.mesh.quads_convert_to_tris()
+        # Merge by Distance
+        bpy.ops.mesh.remove_doubles()
 
-        #     if len(bm.edges) == old_edge_len: # 重覆直到沒有邊被刪
-        #         break
+        bm = bmesh.from_edit_mesh(obj.data)
+        # 1. 刪除面積為 0 的線和邊
+        old_edge_len = len(bm.edges)
+        while True:
+            bmesh.ops.dissolve_degenerate(bm, edges=bm.edges, dist=0.0001)
 
-        #     old_edge_len = len(bm.edges)
+            if len(bm.edges) == old_edge_len: # 重覆直到沒有邊被刪
+                break
 
-        # # 2. 清理連接多個面的邊
+            old_edge_len = len(bm.edges)
+
+        # 2. 清理連接多個面的邊
         # target_edges = [e for e in bm.edges if len(e.link_faces) > 2]
         # disconnected_edges = bmesh.ops.split_edges(bm, edges=target_edges)['edges']
         # disconnected_edges = [e for e in disconnected_edges if len(e.link_faces) == 1]
         # bmesh.ops.delete(bm, geom=disconnected_edges, context='EDGES')
 
-        # # 3. 刪除 wire 和沒連接邊的點
-        # wire_edges = [e for e in bm.edges if not e.link_faces]
-        # bmesh.ops.delete(bm, geom=wire_edges, context='EDGES')
-        # lone_verts = [v for v in bm.verts if not v.link_edges]
-        # bmesh.ops.delete(bm, geom=lone_verts, context='VERTS')
+        # 3. 刪除 wire 和沒連接邊的點
+        while wire_edges := [e for e in bm.edges if not e.link_faces]:
+            bmesh.ops.delete(bm, geom=wire_edges, context='EDGES')
+        while lone_verts := [v for v in bm.verts if not v.link_edges]:
+            bmesh.ops.delete(bm, geom=lone_verts, context='VERTS')
 
-        # bpy.ops.object.mode_set(mode='OBJECT')
+        bmesh.update_edit_mesh(obj.data)
+        
+        # Limited dissolve
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.dissolve_limited()
+
+        bpy.ops.object.mode_set(mode='OBJECT')
 
 # --------------------------------------------------
 # Panel (Sidebar / N-panel)
