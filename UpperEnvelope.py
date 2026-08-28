@@ -9,105 +9,238 @@ bl_info = {
     "doc_url": "https://github.com/jeang-bo-yuan/upper_envelope_blender",
 }
 
-from arrangement2D.upper_envelope import upper_envelope, get_plane_equation, point2D_solve_z
-from arrangement2D import util
-import arrangement2D.config as cfg
 import shapely
 from shapely import Polygon
 from shapely.strtree import STRtree
+import numpy as np
+
 import bpy
 import bmesh
 from bpy.props import *
 from mathutils import Vector
 import math
+
+from typing import Literal
 from collections import defaultdict
 import time
 
-def PolygonsToVF(polygons: list[Polygon]):
+RAW_POINT_TYPE = tuple[float, float, float]
+RAW_EDGE_TYPE = tuple[RAW_POINT_TYPE, RAW_POINT_TYPE]
+RAW_POINT2D_TYPE = tuple[float, float]
+RAW_EDGE2D_TYPE = tuple[RAW_POINT2D_TYPE, RAW_POINT2D_TYPE]
+
+class Util:
+    @staticmethod
+    def get_plane_equation(poly: Polygon) -> tuple[float, float, float, float]:
+        """ 回傳 (a, b, c, d) 代表平面方程式 ax + by + cz + d = 0 """
+        p0 = np.array(poly.exterior.coords[0], np.float64)
+        p1 = np.array(poly.exterior.coords[1], np.float64)
+        p2 = np.array(poly.exterior.coords[2], np.float64)
+
+        a, b, c = np.cross(p1 - p0, p2 - p0)
+        d = - np.dot([a, b, c], p0)
+
+        return (float(a), float(b), float(c), float(d))
+
+    @staticmethod
+    def point2D_solve_z(point: RAW_POINT2D_TYPE, equation: tuple[float, float, float, float]) -> float:
+        """ 給定 (x, y) 和平面方程，求出 z """
+        # z = -(ax + by + d) / c
+        x, y = point
+        a, b, c, d = equation
+        return -(a * x + b * y + d) / c
+
+    @staticmethod
+    def triangulate(polygons: list[Polygon]) -> list[Polygon]:
+        return shapely.get_parts(
+            shapely.constrained_delaunay_triangles(
+                shapely.MultiPolygon(polygons)
+            )
+        ).tolist()
+
+    @staticmethod
+    def PolygonsToVF(polygons: list[Polygon]) -> tuple[list[RAW_POINT_TYPE], list[tuple[int, int, int]], dict[RAW_POINT_TYPE, int]]:
+        """
+        將 Polygons 轉成 V 陣列（包含所有頂點的座標）、F陣列（每個面由哪些頂點組成）、VtoVid
+        """
+        all_coords = []      # 儲存 (x, y, z)
+        faces_indices = []   # 儲存頂點的索引 [ [0, 1, 2], [2, 3, 4], ... ]
+        coord_to_idx = {}    # 快速存取 vertex index
+
+        for P in polygons:
+            current_face = []
+            # P.exterior.coords 頭尾相同，所以我們取到倒數第二個
+            for coord in P.exterior.coords[:-1]:
+                if coord not in coord_to_idx:
+                    coord_to_idx[coord] = len(all_coords)
+                    all_coords.append(coord)
+                current_face.append(coord_to_idx[coord])
+            
+            faces_indices.append(current_face)
+
+        return all_coords, faces_indices, coord_to_idx
+
+    @staticmethod
+    def PolygonsToObj(polygons: list[Polygon], name: str) -> bpy.types.Object:
+        """
+        將一組的 3D Polygon 視做 Mesh 的面並建立 Blender Object
+        """
+        # 1. 準備純 Python 的清單 (速度極快)
+        V, F, _ = Util.PolygonsToVF(polygons)
+
+        # 2. 一次性寫入 Mesh (這是 Blender 最快的寫入方式)
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata(V, [], F)
+        mesh.update()
+
+        # 建立 Object
+        return bpy.data.objects.new(name, mesh)
+
+def upper_envelope(polygons: list[Polygon]
+                   , *
+                   , buffer_size = 1e-15
+                   , project_method: Literal['VERTEX', 'FACE', 'FACE_FILL_WALL'] = 'VERTEX'
+                   , overrideMinZ: float | None = None
+                   , newObjName: str = "Upper Envelope"
+    ) -> bpy.types.Object:
     """
-    將 Polygons 轉成 V 陣列（包含所有頂點的座標）、F陣列（每個面由哪些頂點組成）、VtoVid
+    Upper Envelope : 輸入一堆 mesh 的面，找到數個 open surface 把這些輸入的面給蓋住。
+
+    輸入的面假設 xy 平面為地面，z 軸為高度（和 shapely 一樣）。
+
+    演算法：
+    1. 將每個面投影到 xy 平面，並求出 mesh arrangement 2D
+    2. 對 arrangement 結果的每個頂點，看它被輸入的哪些面給覆蓋（cover），然後投影回去。當一個頂點被多個面覆蓋（cover）時，投影到最高的點上。
+
+    :param buffer_size: 因為數值問題，在計算 mesh arrangement 時交點可能會偏離原直線一點點，導致 arrangement 的結果可能比原本輸入的三角面還要向外擴。
+                        所以在把頂點投影回去時，把原本的每個平面在 XY 平面上都向外擴 buffer_size 的大小再做覆蓋（cover）檢測。
+
+                        buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結果「可能」會看起來更 low poly。
+                        但是在遇到幾乎垂直的面時，反而會把旁邊的頂點拉到極端高的地方。
+    :param overrideMinZ: 若不是 None，則將所有 Project 失敗的 VERTEX 或 FACE 移到 min(`min Z of polygons`, `overrideMinZ`)
     """
-    all_coords = []      # 儲存 (x, y, z)
-    faces_indices = []   # 儲存頂點的索引 [ [0, 1, 2], [2, 3, 4], ... ]
-    coord_to_idx = {}    # 快速存取 vertex index
+    # Note: 這是對 Polygon 投影到 xy 平面後的面積做過濾
+    polygons = [P for P in polygons if P.area > 0]
+    polygons = Util.triangulate(polygons)
 
-    for P in polygons:
-        current_face = []
-        # P.exterior.coords 頭尾相同，所以我們取到倒數第二個
-        for coord in P.exterior.coords[:-1]:
-            if coord not in coord_to_idx:
-                coord_to_idx[coord] = len(all_coords)
-                all_coords.append(coord)
-            current_face.append(coord_to_idx[coord])
-        
-        faces_indices.append(current_face)
-
-    return all_coords, faces_indices, coord_to_idx
-
-def PolygonsToObj(polygons: list[Polygon], name: str):
-    # 1. 準備純 Python 的清單 (速度極快)
-    V, F, _ = PolygonsToVF(polygons)
-
-    # 2. 一次性寫入 Mesh (這是 Blender 最快的寫入方式)
-    mesh = bpy.data.meshes.new(name)
-    mesh.from_pydata(V, [], F)
-    mesh.update()
-
-    # 建立 Object
-    return bpy.data.objects.new(name, mesh)
-
-def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, newObjName: str, *, overrideMinZ: float | None = None) -> bpy.types.Object:
-    """
-    UPPER ENVELOPE and fill vertical wall
-    """
-    polygons = [P for P in polygons if P.is_valid]
-
-    # 取出每一面的 x y 座標
-    edges : list[cfg.RAW_EDGE_TYPE] = []
+    # 取出每一個邊的 x y 座標
+    edges : list[shapely.LineString] = []
     minZ = overrideMinZ or math.inf
 
     for poly in polygons:
         for i in range(1, len(poly.exterior.coords)):
-            edges.append((
+            edges.append(shapely.LineString([
                 poly.exterior.coords[i - 1][:2],    # 起點 xy
                 poly.exterior.coords[i][:2]         # 終點 xy
-            ))
+            ]))
 
             minZ = min(minZ, poly.exterior.coords[i][2])
 
     # Step 1. 做 Arrangement #############################################################################
     print("\n== Arrangement 2D (using shapely.unary_union + shapely.polygonize) ==")
     perf_start = time.perf_counter()
-    A = shapely.polygonize(shapely.unary_union([shapely.LineString(E) for E in edges]).geoms)
-    A = util.triangulate([P for P in shapely.get_parts(A) if isinstance(P, shapely.Polygon)])
+    arrangement2Ds = [P for P in 
+            shapely.get_parts(shapely.polygonize(shapely.unary_union(edges).geoms))
+            if isinstance(P, Polygon)
+        ]
+    arrangement2Ds = Util.triangulate(arrangement2Ds)
     print("Arrangement 2D: ", time.perf_counter() - perf_start, "s")
 
-    # Step 2. Project Face and Record Vertex Height ######################################################
+    # Step 2. Project Back ###############################################################################
+    match project_method:
+        case 'VERTEX':
+            return project_vertex(polygons, arrangement2Ds, buffer_size, minZ, newObjName)
+
+        case 'FACE':
+            return project_face(polygons, arrangement2Ds, buffer_size, minZ, newObjName, fill_wall=False)
+
+        case 'FACE_FILL_WALL':
+            return project_face(polygons, arrangement2Ds, buffer_size, minZ, newObjName, fill_wall=True)
+    
+    raise ValueError(f"Unknown project method: {project_method}")
+
+def project_vertex(polygons: list[Polygon], arrangement2Ds: list[Polygon], buffer_size: float, minZ: float, newObjName: str):
+    """
+    將 A 的每個頂點投影回 polygons 中最高的位置    
+    """
+    print("== Upper Envelope Project Vertex ==")
+    print(f"\t#Arrangement / #Polygons: {len(arrangement2Ds)} / {len(polygons)}")
+    perf_start = time.perf_counter()
+
+    # Step 1. 將 Arrangement 中的每個平面的頂點投影回 3 維 ################################################
+    projected_vertex_height = dict()
+    point_set = set()
+    # 先記錄所有頂點
+    for a in arrangement2Ds:
+        for i in range(1, len(a.exterior.coords)):
+            projected_vertex_height[a.exterior.coords[i]] = minZ # 該頂點預設投回 minZ
+            point_set.add(a.exterior.coords[i])
+
+    points = [shapely.Point(p) for p in point_set]
+    tree = STRtree(points)
+    # 對於每個原始的面
+    for poly in polygons:
+        equation = Util.get_plane_equation(poly)
+
+        poly_buffer = poly.buffer(buffer_size)
+        shapely.prepare(poly_buffer)
+        
+        # 看它蓋住哪些點
+        for i in tree.query(poly_buffer, predicate='covers'):
+            point_co = points[i].coords[0]
+
+            # 將這些點投影回該面並記錄最大值
+            projected_vertex_height[point_co] = max(
+                projected_vertex_height[point_co],
+                Util.point2D_solve_z(point_co, equation)
+            )
+
+    print(f"Project Vertex Height: {time.perf_counter() - perf_start} s")
+    perf_start = time.perf_counter()
+
+    # Step 2. 建造結果 ###############################################################################
+    projected_arrangements: list[Polygon] = []
+    for a in arrangement2Ds:
+        exterior = []
+        for co in a.exterior.coords:
+            exterior.append((co[0], co[1], projected_vertex_height[co]))
+
+        projected_arrangements.append(Polygon(exterior))
+    newObj = Util.PolygonsToObj(projected_arrangements, newObjName)
+    print(f"Create Mesh: {time.perf_counter() - perf_start} s")
+
+    return newObj
+
+def project_face(polygons: list[Polygon], arrangement2Ds: list[Polygon], buffer_size: float, minZ: float, newObjName: str, *, fill_wall: bool = True) -> bpy.types.Object:
+    """
+    以面為單位進行投影
+    """
+    print(f"== Project Face {'(fill wall)' if fill_wall else ''} ==")
+    print(f"\t#Arrangement / #Polygons: {len(arrangement2Ds)} / {len(polygons)}")
+    perf_start = time.perf_counter()
+
+    # Step 1. Project Face and Record Vertex Height ######################################################
     # 給一個 (x, y) -> 一個列表包含所有高度
-    vertex_height_list: defaultdict[cfg.RAW_POINT_TYPE, list[float]] = defaultdict(list)
+    vertex_height_list: defaultdict[RAW_POINT2D_TYPE, list[float]] = defaultdict(list)
 
     # 所有原始的面
     tree = STRtree([P.buffer(buffer_size) for P in polygons])
     
     # 結果
-    result: list[Polygon] = []
-
-    print("== Upper Envelope Face Fill Wall ==")
-    print(f"\t#Arrangement / #Polygons: {len(A)} / {len(polygons)}")
-    perf_start = time.perf_counter()
+    projected_arrangements: list[Polygon] = []
     project_fail = 0
 
-    for arrangement in A:
+    for arrangement in arrangement2Ds:
         # 最好的投影、最好的投影的高度
         best_proj = [(co[0], co[1], minZ) for co in arrangement.exterior.coords]
         best_height = minZ
 
         # 找出被原始的哪些面覆蓋
         for i in tree.query(arrangement, predicate='covered_by'):
-            plane_eq = get_plane_equation(polygons[i])
+            plane_eq = Util.get_plane_equation(polygons[i])
             
             # 實際投影一次
-            proj = [(co[0], co[1], point2D_solve_z(co, plane_eq)) for co in arrangement.exterior.coords]
+            proj = [(co[0], co[1], Util.point2D_solve_z(co, plane_eq)) for co in arrangement.exterior.coords]
             height = sum(co[2] for co in proj) / len(proj) # 平均高度
 
             # 若更高
@@ -135,39 +268,44 @@ def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, n
             if not do_snap:
                 vertex_height_list[vert[:2]].append(vert[2])
         
-        result.append(Polygon(best_proj))
+        projected_arrangements.append(Polygon(best_proj))
 
     print(f"\t#Project Failed: {project_fail}")
-    print(f"Project Face Height: {time.perf_counter() - perf_start}")
+    print(f"Project Face Height: {time.perf_counter() - perf_start} s")
     perf_start = time.perf_counter()
 
-    # Step 3. V, F, E -> E 的目的是補上垂直面的線
-    V, F, VtoVid = PolygonsToVF(result)
+    # Step 2. V, F, E -> E 的目的是補上垂直面的線 #############################################
+    V, F, VtoVid = Util.PolygonsToVF(projected_arrangements)
 
     E = []
-    for point2D, zList in vertex_height_list.items():
-        if len(zList) > 1:
-            zList = sorted(zList)
+    if fill_wall:
+        # 只有要補牆面才補上垂直面的線
+        for point2D, zList in vertex_height_list.items():
+            if len(zList) > 1:
+                zList = sorted(zList)
 
-            for i in range(1, len(zList)):
-                E.append((
-                    VtoVid[point2D + (zList[i - 1], )],
-                    VtoVid[point2D + (zList[i], )]
-                ))
+                for i in range(1, len(zList)):
+                    E.append((
+                        VtoVid[point2D + (zList[i - 1], )],
+                        VtoVid[point2D + (zList[i], )]
+                    ))
 
-    # Step 4. 建 Mesh
+    # Step 3. 建 Mesh ######################################################################
     mesh = bpy.data.meshes.new(newObjName)
     mesh.from_pydata(V, E, F)
     mesh.update()
     newObj =  bpy.data.objects.new(newObjName, mesh)
 
-    print(f"Add vertical edge && Create mesh: {time.perf_counter() - perf_start}")
+    print(f"{'Add vertical edge && ' if fill_wall else ''}Create mesh: {time.perf_counter() - perf_start} s")
     perf_start = time.perf_counter()
 
-    # Step5. Fill Hole
+    if not fill_wall:
+        return newObj
+
+    # Step4. Fill Wall #####################################################################
     # 選 wire 和 boundary （但 Arrangement 中最外圍一圈不能選）
-    boundary: set[cfg.RAW_EDGE_TYPE] = set()
-    for arrangement in A:
+    boundary: set[RAW_EDGE_TYPE] = set()
+    for arrangement in arrangement2Ds:
         for i in range(1, len(arrangement.exterior.coords)):
             v1 = arrangement.exterior.coords[i - 1][:2]
             v2 = arrangement.exterior.coords[i][:2]
@@ -203,7 +341,7 @@ def upper_envelope_face_fill_wall(polygons: list[Polygon], buffer_size: float, n
     bpy.ops.object.mode_set(mode='OBJECT')
     bpy.context.scene.collection.objects.unlink(newObj)
 
-    print(f"Fill Wall: {time.perf_counter() - perf_start}")
+    print(f"Fill Wall: {time.perf_counter() - perf_start} s")
 
     return newObj
 
@@ -333,8 +471,6 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         return context.object != None and context.object.mode == 'OBJECT'
 
     def execute(self, context):
-        old_debug = cfg.DEBUG, cfg.DEBUG_PLOT
-        cfg.DEBUG, cfg.DEBUG_PLOT = (True, False)
         perf_start = time.perf_counter()
 
         original_name = context.object.name
@@ -365,7 +501,7 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         # 找 Upper Envelope
         newObj = self.ObjFindUpperEnvelope(obj, original_name)
         if self.do_cleanup:
-            self.cleanup(newObj)
+            self.CleanUp(newObj)
 
         # 刪 obj
         bpy.ops.object.select_all(action='DESELECT')
@@ -378,7 +514,6 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
         context.view_layer.objects.active = newObj
 
         print("[Time] Total: ", time.perf_counter() - perf_start, "s")
-        cfg.DEBUG, cfg.DEBUG_PLOT = old_debug
         return {'FINISHED'}
     
     def SnapActiveObject(self, context: bpy.types.Context):
@@ -407,12 +542,11 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
 
         # 生成 upper envelope ###########################################################
         overrideMinZ = self.minZ if self.overrideMinZ else None
-        if self.project_method == "FACE_FILL_WALL":
-            newObj = upper_envelope_face_fill_wall(polygons, self.buffer_size, f"{original_name} Upper Envelope",
-                                                   overrideMinZ=overrideMinZ)
-        else:
-            polygons = upper_envelope(polygons, buffer_size=self.buffer_size, project_method=self.project_method, overrideMinZ=overrideMinZ)
-            newObj = PolygonsToObj(polygons, f"{original_name} Upper Envelope")
+        newObj = upper_envelope(polygons
+                                , buffer_size=self.buffer_size
+                                , project_method=self.project_method
+                                , overrideMinZ=overrideMinZ
+                                , newObjName=f"{original_name} Upper Envelope {self.project_method}")
         
         ################################################################################
         for C in obj.users_collection:
@@ -420,7 +554,7 @@ buffer_size 調大會把更多 arrangement 的面投影到同個平面上，結�
 
         return newObj
 
-    def cleanup(self, obj: bpy.types.Object):
+    def CleanUp(self, obj: bpy.types.Object):
         """
         清理過多的頂點但可能影響拓樸
         """

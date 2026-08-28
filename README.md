@@ -23,7 +23,7 @@ Step 1. 使用管理員權限開啟 command line，並移動到 blender 使用�
 Step 2.
 
 ```
-python -m pip install git+https://github.com/jeang-bo-yuan/mesh2D_arrangement_python.git
+python -m pip install shapely numpy
 ```
 
 # 參數
